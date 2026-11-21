@@ -1,0 +1,11 @@
+# Everyday tools. Installed with --extras.
+btop
+tmux
+vim
+nano
+zsh
+fastfetch
+mpv
+obsidian
+syncthing
+openssh

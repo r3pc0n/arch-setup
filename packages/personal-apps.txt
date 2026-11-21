@@ -1,0 +1,10 @@
+# Libraries behind my own apps (backtalk-ui, Murmur). Installed with --personal-apps.
+# These are what was installed on the X230; which app needs which was not traced one by one.
+espeak-ng
+portaudio
+qrencode
+python-pyqt6
+python-pyqt6-webengine
+qt6-webengine
+qt6-webchannel
+webkitgtk-6.0

@@ -1,0 +1,18 @@
+#!/bin/bash
+# Opens Nautilus in the working directory of the currently focused terminal.
+# Walks down to the deepest child process of the focused window (the actual
+# foreground shell/job), since the terminal emulator's own /proc/<pid>/cwd
+# stays pinned to its launch directory, not wherever the shell has since cd'd.
+
+pid=$(hyprctl activewindow -j | python3 -c "import json,sys; print(json.load(sys.stdin)['pid'])")
+
+deepest="$pid"
+while true; do
+    child=$(ps --ppid "$deepest" -o pid= | tr -d ' ' | head -1)
+    [ -z "$child" ] && break
+    deepest="$child"
+done
+
+cwd=$(readlink "/proc/$deepest/cwd")
+
+exec uwsm-app -- nautilus --new-window "${cwd:-$HOME}"

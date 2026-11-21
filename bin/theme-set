@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""
+theme-set — apply one of Omarchy's theme color palettes (colors.toml) to this
+machine's Hyprland/Waybar/mako/hyprlock configs. Not Omarchy's own theme
+switcher (that's tied to their Quickshell shell) — this is our own applier
+built from the same portable palette data.
+"""
+import json
+import re
+import subprocess
+import sys
+import tomllib
+import urllib.request
+from pathlib import Path
+
+THEMES = [
+    "catppuccin-latte", "catppuccin", "ethereal", "everforest", "flexoki-light",
+    "gruvbox", "hackerman", "kanagawa", "last-horizon", "lumon", "lupine",
+    "matte-black", "miasma", "nord", "osaka-jade", "retro-82", "ristretto",
+    "rose-pine", "solitude", "tokyo-night", "vantablack", "white",
+]
+
+REPO = "omacom/omarchy"
+BRANCH = "quattro"
+RAW = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/themes"
+API = f"https://api.github.com/repos/{REPO}/contents/themes"
+
+CACHE_DIR = Path.home() / ".local/share/theme-set"
+STATE_FILE = CACHE_DIR / "current"
+
+HYPR_DIR = Path.home() / ".config/hypr"
+WAYBAR_DIR = Path.home() / ".config/waybar"
+MAKO_CONFIG = Path.home() / ".config/mako/config"
+FOOT_CONFIG = Path.home() / ".config/foot/foot.ini"
+FUZZEL_CONFIG = Path.home() / ".config/fuzzel/fuzzel.ini"
+WALLPAPER = HYPR_DIR / "assets/wallpaper.png"
+FOOT_ALPHA = "0.92"  # subtle transparency, not a see-through terminal
+# vault-graph's "Follow Omarchy Theme" feature reads this plain-text file (just
+# the theme slug, e.g. "gruvbox") — its own THEMES keys match Omarchy's names
+# exactly, so writing it here wires vault-graph's theme-follow up for free even
+# though we're not running real Omarchy. See ~/vault-graph/server.py's
+# OMARCHY_THEME_FILE comment.
+OMARCHY_THEME_FILE = Path.home() / ".local/state/omarchy/current/theme.name"
+
+
+def fetch(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=10) as r:
+        return r.read()
+
+
+def theme_cache_dir(name: str) -> Path:
+    return CACHE_DIR / name
+
+
+def is_cached(name: str) -> bool:
+    return (theme_cache_dir(name) / "colors.toml").exists()
+
+
+def download_theme(name: str) -> None:
+    d = theme_cache_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+
+    colors_url = f"{RAW}/{name}/colors.toml"
+    (d / "colors.toml").write_bytes(fetch(colors_url))
+    print(f"fetched colors.toml for {name}")
+
+    try:
+        listing = json.loads(fetch(f"{API}/{name}/backgrounds"))
+        candidates = sorted(
+            f["name"] for f in listing
+            if f["type"] == "file"
+            and "omarchy" not in f["name"].lower()
+            and "omakub" not in f["name"].lower()
+        )
+        if candidates:
+            bg_name = candidates[0]
+            bg_bytes = fetch(f"{RAW}/{name}/backgrounds/{bg_name}")
+            bg_path = d / f"wallpaper{Path(bg_name).suffix}"
+            bg_path.write_bytes(bg_bytes)
+            print(f"fetched wallpaper ({bg_name}) for {name}")
+        else:
+            print(f"no non-branded wallpaper found for {name}, keeping current wallpaper")
+    except Exception as e:
+        print(f"warning: could not fetch a wallpaper for {name} ({e}), keeping current wallpaper")
+
+
+def load_palette(name: str) -> dict:
+    with open(theme_cache_dir(name) / "colors.toml", "rb") as f:
+        c = tomllib.load(f)
+    bg = c.get("background", "#1e1e2e")
+    fg = c.get("foreground", "#cdd6f4")
+    return {
+        "mode": c.get("mode", "dark"),
+        "accent": c.get("accent", "#89b4fa"),
+        "accent2": c.get("magenta", c.get("accent", "#cba6f7")),
+        "background": bg,
+        "dark_background": c.get("dark_background", bg),
+        "lighter_background": c.get("lighter_background", c.get("selection", bg)),
+        "foreground": fg,
+        "dark_foreground": c.get("dark_foreground", c.get("muted", fg)),
+        "light_foreground": c.get("light_foreground", fg),
+        "bright_foreground": c.get("bright_foreground", fg),
+        "darker_background": c.get("darker_background", bg),
+        "muted": c.get("muted", c.get("dark_foreground", fg)),
+        "red": c.get("red", "#f38ba8"),
+        "yellow": c.get("yellow", "#f9e2af"),
+        "green": c.get("green", "#a6e3a1"),
+        "cyan": c.get("cyan", "#94e2d5"),
+        "blue": c.get("blue", c.get("accent", "#89b4fa")),
+        "magenta": c.get("magenta", c.get("accent", "#cba6f7")),
+        "bright_red": c.get("bright_red", c.get("red", "#f38ba8")),
+        "bright_yellow": c.get("bright_yellow", c.get("yellow", "#f9e2af")),
+        "bright_green": c.get("bright_green", c.get("green", "#a6e3a1")),
+        "bright_cyan": c.get("bright_cyan", c.get("cyan", "#94e2d5")),
+        "bright_blue": c.get("bright_blue", c.get("blue", c.get("accent", "#89b4fa"))),
+        "bright_magenta": c.get("bright_magenta", c.get("magenta", c.get("accent", "#cba6f7"))),
+    }
+
+
+def hex_no_hash(h: str) -> str:
+    return h.lstrip("#")
+
+
+def write_hypr_colors(p: dict) -> None:
+    content = (
+        "# Generated by theme-set. Do not hand-edit — overwritten on the next theme switch.\n"
+        f"$accent = {hex_no_hash(p['accent'])}\n"
+        f"$accent2 = {hex_no_hash(p['accent2'])}\n"
+        f"$muted = {hex_no_hash(p['muted'])}\n"
+        f"$background = {hex_no_hash(p['background'])}\n"
+    )
+    (HYPR_DIR / "colors.conf").write_text(content)
+
+
+def write_waybar_colors(p: dict) -> None:
+    # WAYBAR_DIR/colors/colors.css — matches the cebem1nt-dotfiles-derived bar
+    # config adopted 2026-09-20 (see Arch-Desktop.md), which imports
+    # colors/colors.css and expects this exact variable set, not the older
+    # flat accent/background/foreground/dark_foreground/lighter_background/red/yellow
+    # scheme this function used to write for the previous, simpler bar config.
+    content = (
+        "/* Generated by theme-set. Do not hand-edit — overwritten on the next theme switch. */\n"
+        f"@define-color accent {p['accent']};\n"
+        f"@define-color fg {p['foreground']};\n"
+        f"@define-color workspace-fg {p['foreground']};\n"
+        f"@define-color inactive {p['muted']};\n"
+        f"@define-color highlight {p['muted']};\n"
+        f"@define-color module-bg alpha({p['background']}, 0.9);\n"
+        f"@define-color tooltip-bg alpha({p['background']}, 0.9);\n"
+        f"@define-color border alpha({p['dark_foreground']}, 0.4);\n"
+        f"@define-color red {p['red']};\n"
+        f"@define-color yellow {p['yellow']};\n"
+        f"@define-color green {p['green']};\n"
+        f"@define-color blue {p['blue']};\n"
+    )
+    colors_dir = WAYBAR_DIR / "colors"
+    colors_dir.mkdir(parents=True, exist_ok=True)
+    colors_css = colors_dir / "colors.css"
+    if colors_css.is_symlink() or colors_css.exists():
+        colors_css.unlink()
+    colors_css.write_text(content)
+    # colors.dark.css/colors.light.css belonged to the upstream config's own
+    # light/dark toggle script (not adopted here) — dead weight once colors.css
+    # is a real generated file instead of a symlink into one of them.
+    (colors_dir / "colors.dark.css").unlink(missing_ok=True)
+    (colors_dir / "colors.light.css").unlink(missing_ok=True)
+
+
+def write_mako(p: dict) -> None:
+    content = f"""sort=-time
+layer=overlay
+background-color={p['background']}
+text-color={p['foreground']}
+border-color={p['accent']}
+border-size=2
+border-radius=8
+padding=10
+margin=10
+width=350
+height=120
+default-timeout=5000
+font=JetBrainsMono Nerd Font 10
+anchor=top-right
+
+[urgency=low]
+border-color={p['muted']}
+
+[urgency=high]
+border-color={p['red']}
+default-timeout=0
+"""
+    MAKO_CONFIG.write_text(content)
+
+
+def write_foot(p: dict) -> None:
+    section = "colors-light" if p.get("mode") == "light" else "colors-dark"
+    content = f"""# Generated by theme-set. Do not hand-edit — overwritten on the next theme switch.
+[{section}]
+alpha={FOOT_ALPHA}
+background={hex_no_hash(p['background'])}
+foreground={hex_no_hash(p['foreground'])}
+
+regular0={hex_no_hash(p['darker_background'])}
+regular1={hex_no_hash(p['red'])}
+regular2={hex_no_hash(p['green'])}
+regular3={hex_no_hash(p['yellow'])}
+regular4={hex_no_hash(p['blue'])}
+regular5={hex_no_hash(p['magenta'])}
+regular6={hex_no_hash(p['cyan'])}
+regular7={hex_no_hash(p['light_foreground'])}
+
+bright0={hex_no_hash(p['muted'])}
+bright1={hex_no_hash(p['bright_red'])}
+bright2={hex_no_hash(p['bright_green'])}
+bright3={hex_no_hash(p['bright_yellow'])}
+bright4={hex_no_hash(p['bright_blue'])}
+bright5={hex_no_hash(p['bright_magenta'])}
+bright6={hex_no_hash(p['bright_cyan'])}
+bright7={hex_no_hash(p['bright_foreground'])}
+"""
+    FOOT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    FOOT_CONFIG.write_text(content)
+
+
+def write_fuzzel(p: dict) -> None:
+    # fuzzel colors are RGBA (8 hex digits, alpha last), unlike hypr/mako/foot's RRGGBB.
+    bg = hex_no_hash(p['background'])
+    fg = hex_no_hash(p['foreground'])
+    accent = hex_no_hash(p['accent'])
+    accent2 = hex_no_hash(p['accent2'])
+    dark_fg = hex_no_hash(p['dark_foreground'])
+    sel_bg = hex_no_hash(p['lighter_background'])
+    content = f"""# Generated by theme-set. Do not hand-edit — overwritten on the next theme switch.
+[main]
+font=JetBrainsMono Nerd Font:size=11
+lines=8
+width=35
+horizontal-pad=16
+vertical-pad=10
+inner-pad=8
+
+[border]
+width=2
+radius=12
+
+[colors]
+background={bg}ee
+text={fg}ff
+message={dark_fg}ff
+prompt={accent}ff
+placeholder={dark_fg}ff
+input={fg}ff
+match={accent}ff
+selection={sel_bg}ff
+selection-text={fg}ff
+selection-match={accent2}ff
+counter={dark_fg}ff
+border={accent}ff
+"""
+    FUZZEL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    FUZZEL_CONFIG.write_text(content)
+
+
+def write_hyprlock(p: dict) -> None:
+    content = f"""general {{
+    disable_loading_bar = false
+    grace = 2
+    hide_cursor = true
+}}
+
+background {{
+    path = ~/.config/hypr/assets/wallpaper.png
+    blur_passes = 2
+    blur_size = 4
+}}
+
+input-field {{
+    size = 250, 50
+    outline_thickness = 2
+    dots_size = 0.26
+    outer_color = rgba({hex_no_hash(p['accent'])}ff)
+    inner_color = rgba({hex_no_hash(p['dark_background'])}cc)
+    font_color = rgba({hex_no_hash(p['foreground'])}ff)
+    fade_on_empty = true
+    placeholder_text = <span foreground="##{hex_no_hash(p['foreground'])}">Password...</span>
+    position = 0, -20
+    halign = center
+    valign = center
+}}
+
+label {{
+    text = cmd[update:1000] echo "$(date +"%H:%M")"
+    font_size = 64
+    font_family = JetBrainsMono Nerd Font
+    position = 0, 150
+    halign = center
+    valign = center
+}}
+
+label {{
+    text = $USER
+    font_size = 20
+    font_family = JetBrainsMono Nerd Font
+    position = 0, 60
+    halign = center
+    valign = center
+}}
+"""
+    (HYPR_DIR / "hyprlock.conf").write_text(content)
+
+
+def update_wallpaper(name: str) -> None:
+    d = theme_cache_dir(name)
+    candidates = list(d.glob("wallpaper.*"))
+    if not candidates:
+        print("no cached wallpaper for this theme, leaving current wallpaper as-is")
+        return
+    src = candidates[0]
+    if src.suffix.lower() == ".png":
+        WALLPAPER.write_bytes(src.read_bytes())
+    else:
+        r = subprocess.run(["magick", str(src), str(WALLPAPER)], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"warning: wallpaper conversion failed: {r.stderr.strip()}")
+            return
+    print(f"wallpaper updated from {src.name}")
+
+
+def reload_everything() -> None:
+    import os
+    if os.environ.get("THEME_SET_NO_RELOAD"):
+        print("THEME_SET_NO_RELOAD set: config written, not live-applied")
+        return
+    runtime = Path(f"/run/user/{os.getuid()}")
+    sig_dir = runtime / "hypr"
+    sigs = sorted(sig_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True) if sig_dir.exists() else []
+    if not sigs:
+        print("warning: no running Hyprland instance found, config written but not live-applied")
+        return
+    env = os.environ.copy()
+    env["HYPRLAND_INSTANCE_SIGNATURE"] = sigs[0].name
+    wayland_displays = [p.name for p in runtime.glob("wayland-*") if not p.name.endswith(".lock")]
+    if wayland_displays:
+        env["WAYLAND_DISPLAY"] = wayland_displays[0]
+
+    subprocess.run(["hyprctl", "reload"], env=env, capture_output=True)
+    subprocess.run(["pkill", "waybar"], env=env, capture_output=True)
+    subprocess.run(["pkill", "hyprpaper"], env=env, capture_output=True)
+    import time
+    time.sleep(0.3)
+    # A killed hyprpaper can leave its IPC socket behind; a fresh instance sees the
+    # stale file, assumes another instance owns it, and exits quietly without error.
+    stale_sock = sig_dir / sigs[0].name / ".hyprpaper.sock"
+    stale_sock.unlink(missing_ok=True)
+    subprocess.Popen(["waybar"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    subprocess.Popen(["hyprpaper"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    # mako was replaced by swaync 2026-09-20 (see Arch-Desktop.md) — write_mako()
+    # and MAKO_CONFIG still run/exist so a rollback to mako needs no code changes,
+    # but there's nothing to reload here anymore; swaync isn't colored by
+    # theme-set yet (still stock /etc/xdg/swaync/*), so no reload call for it either.
+    print("reloaded: hyprland, waybar, hyprpaper")
+
+
+def write_omarchy_theme_file(name: str) -> None:
+    OMARCHY_THEME_FILE.parent.mkdir(parents=True, exist_ok=True)
+    OMARCHY_THEME_FILE.write_text(name + "\n")
+
+
+def apply_theme(name: str) -> None:
+    p = load_palette(name)
+    write_hypr_colors(p)
+    write_waybar_colors(p)
+    write_mako(p)
+    write_hyprlock(p)
+    write_foot(p)
+    write_fuzzel(p)
+    write_omarchy_theme_file(name)
+    update_wallpaper(name)
+    reload_everything()
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(name)
+    print(f"theme set: {name}")
+    print("note: already-open terminal windows keep their old colors (foot has no live-reload "
+          "for this) — close and reopen them to pick up the new theme.")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        print("Usage: theme-set <name> | --list | --current")
+        return
+
+    if args[0] == "--list":
+        current = STATE_FILE.read_text().strip() if STATE_FILE.exists() else None
+        for t in THEMES:
+            marks = []
+            if t == current:
+                marks.append("current")
+            if is_cached(t):
+                marks.append("cached")
+            suffix = f"  [{', '.join(marks)}]" if marks else ""
+            print(f"{t}{suffix}")
+        return
+
+    if args[0] == "--current":
+        print(STATE_FILE.read_text().strip() if STATE_FILE.exists() else "(none set)")
+        return
+
+    name = args[0]
+    if name not in THEMES:
+        print(f"error: unknown theme '{name}'. Run 'theme-set --list' to see options.", file=sys.stderr)
+        sys.exit(1)
+
+    if not is_cached(name):
+        download_theme(name)
+
+    apply_theme(name)
+
+
+if __name__ == "__main__":
+    main()

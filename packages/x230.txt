@@ -1,0 +1,3 @@
+# ThinkPad X230 hardware (Intel graphics, thermals). Installed with --x230.
+libva-intel-driver
+thermald

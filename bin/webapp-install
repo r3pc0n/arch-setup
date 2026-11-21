@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WEBAPPS_DIR="$HOME/.local/share/webapps"
+APPS_DIR="$HOME/.local/share/applications"
+ICONS_DIR="$HOME/.local/share/icons/webapps"
+
+usage() {
+    echo "Usage: webapp-install <name> <url> [icon-url-or-path]" >&2
+    exit 1
+}
+
+[ $# -ge 2 ] || usage
+
+NAME="$1"
+URL="$2"
+ICON_SRC="${3:-}"
+
+# Only http/https ever reach --app=. Anything else (javascript:, file:, data:, ...)
+# is rejected explicitly by scheme, not just incidentally mangled — this is the fix for
+# the known omarchy-webapp-install scheme-injection issue (#8495). A schemeless input
+# (no "word:" prefix at all) is assumed https, same as Omarchy's script. Note: this means
+# a bare "host:port" with no scheme (e.g. "localhost:3000") reads as a scheme too and gets
+# rejected — type the full "https://localhost:3000" for that case.
+if [[ "$URL" =~ ^https?:// ]]; then
+    :
+elif [[ "$URL" =~ ^[A-Za-z][A-Za-z0-9+.-]*: ]]; then
+    echo "error: only http:// and https:// URLs are allowed (got: $URL)" >&2
+    exit 1
+else
+    URL="https://$URL"
+fi
+
+SLUG=$(printf '%s' "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//;s/-*$//')
+[ -n "$SLUG" ] || { echo "error: name produces an empty slug" >&2; exit 1; }
+
+PROFILE_DIR="$WEBAPPS_DIR/$SLUG"
+mkdir -p "$PROFILE_DIR" "$APPS_DIR" "$ICONS_DIR"
+
+ORIGIN=$(printf '%s' "$URL" | sed -E 's#(https?://[^/]+).*#\1#')
+ICON_PATH="web-browser"  # generic themed fallback unless a real icon is confirmed below
+
+# Icons lie about their format constantly (favicon.ico served as "icon.png", HTML error
+# pages served with a 200 status instead of a real image, etc.) — trust the downloaded
+# bytes, not the URL's extension or an assumed content-type. Every candidate lands in a
+# temp file first and gets sniffed with `file` before being kept.
+#
+# fuzzel only links libpng and libresvg (checked via `ldd`) — no ICO/JPEG/WEBP/BMP decoder
+# at all, so those formats display as a blank/missing icon even with a correct extension.
+# Anything that isn't already PNG or SVG gets converted with ImageMagick. A multi-resolution
+# .ico converts to several numbered frames (test showed 16x16 and 32x32 from one file) — pick
+# the largest by pixel width rather than whichever sorts first.
+icon_mime() { file -b --mime-type "$1" 2>/dev/null; }
+
+convert_to_png() {
+    local src="$1" dest="$2" tmpdir pattern best_w=0 best_f="" w
+    tmpdir=$(mktemp -d)
+    pattern="$tmpdir/frame.png"
+    magick "$src" "$pattern" 2>/dev/null || { rm -rf "$tmpdir"; return 1; }
+    for f in "$tmpdir"/frame*.png "$tmpdir"/frame.png; do
+        [ -f "$f" ] || continue
+        w=$(magick identify -format "%w" "$f" 2>/dev/null || echo 0)
+        if [ "$w" -gt "$best_w" ] 2>/dev/null; then
+            best_w="$w"
+            best_f="$f"
+        fi
+    done
+    if [ -n "$best_f" ]; then
+        mv "$best_f" "$dest"
+        rm -rf "$tmpdir"
+        return 0
+    fi
+    rm -rf "$tmpdir"
+    return 1
+}
+
+try_save_icon() {
+    local tmp mime
+    tmp=$(mktemp)
+    if ! curl -fsSL --max-time 10 "$1" -o "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mime=$(icon_mime "$tmp")
+    case "$mime" in
+        image/png)
+            mv "$tmp" "$ICONS_DIR/$SLUG.png"
+            ICON_PATH="$ICONS_DIR/$SLUG.png"
+            return 0
+            ;;
+        image/svg+xml)
+            mv "$tmp" "$ICONS_DIR/$SLUG.svg"
+            ICON_PATH="$ICONS_DIR/$SLUG.svg"
+            return 0
+            ;;
+        image/*)
+            if convert_to_png "$tmp" "$ICONS_DIR/$SLUG.png"; then
+                ICON_PATH="$ICONS_DIR/$SLUG.png"
+                rm -f "$tmp"
+                return 0
+            fi
+            ;;
+    esac
+    rm -f "$tmp"
+    return 1
+}
+
+fetch_icon() {
+    local src="$1"
+    if [ -n "$src" ]; then
+        if [[ "$src" == http://* || "$src" == https://* ]]; then
+            try_save_icon "$src" && return 0
+        elif [ -f "$src" ]; then
+            case "$(icon_mime "$src")" in
+                image/png) cp "$src" "$ICONS_DIR/$SLUG.png"; ICON_PATH="$ICONS_DIR/$SLUG.png"; return 0 ;;
+                image/svg+xml) cp "$src" "$ICONS_DIR/$SLUG.svg"; ICON_PATH="$ICONS_DIR/$SLUG.svg"; return 0 ;;
+                image/*)
+                    if convert_to_png "$src" "$ICONS_DIR/$SLUG.png"; then
+                        ICON_PATH="$ICONS_DIR/$SLUG.png"
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+
+    # Try the conventional root favicon first.
+    try_save_icon "$ORIGIN/favicon.ico" && return 0
+
+    # Fall back to parsing the page for a <link rel="icon"> href.
+    local html icon_href
+    html=$(curl -fsSL --max-time 10 "$URL" 2>/dev/null || true)
+    icon_href=$(printf '%s' "$html" | grep -ioE '<link[^>]+rel="[^"]*icon[^"]*"[^>]*>' | head -1 | grep -oE 'href="[^"]*"' | sed 's/href="//;s/"$//')
+    if [ -n "$icon_href" ]; then
+        case "$icon_href" in
+            http://*|https://*) : ;;
+            //*) icon_href="https:$icon_href" ;;
+            /*) icon_href="$ORIGIN$icon_href" ;;
+            *) icon_href="$ORIGIN/$icon_href" ;;
+        esac
+        try_save_icon "$icon_href" && return 0
+    fi
+
+    return 1
+}
+
+if fetch_icon "$ICON_SRC"; then
+    echo "icon saved: $ICON_PATH"
+else
+    echo "no icon found — falling back to the generic web-browser icon"
+fi
+
+DESKTOP_FILE="$APPS_DIR/webapp-$SLUG.desktop"
+cat > "$DESKTOP_FILE" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$NAME
+Comment=Web app: $URL
+Exec=chromium "--app=$URL" "--user-data-dir=$PROFILE_DIR" --no-first-run "--name=$SLUG"
+Icon=$ICON_PATH
+Terminal=false
+Categories=Network;WebBrowser;
+EOF
+
+update-desktop-database "$APPS_DIR" 2>/dev/null || true
+
+echo "installed: $NAME -> $DESKTOP_FILE"
+echo "note: each web app gets its own Chromium profile (isolated cookies/logins from your regular browsing) under $PROFILE_DIR"

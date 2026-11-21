@@ -1,0 +1,11 @@
+# Secrets and machine state never go in this repo.
+*.env
+.env*
+credentials
+*.session
+*.session-journal
+*.pem
+*.key
+*.token
+__pycache__/
+*.bak

@@ -25,9 +25,11 @@ Do a normal Arch install first (base system, bootloader, a user with sudo, netwo
     git clone https://github.com/r3pc0n/arch-setup ~/Projects/arch-setup
     cd ~/Projects/arch-setup
     ./install.sh --dry-run          # see exactly what it will do
-    ./install.sh --extras --x230    # drop --x230 unless it's a ThinkPad X230
+    ./install.sh --extras --x230          # ThinkPad X230 (old Intel graphics)
+    ./install.sh --extras --intel-modern  # newer Intel laptops (Broadwell and later)
 
-Options: `--extras` (btop, tmux, vim, zsh, Obsidian, Syncthing...), `--x230` (Intel graphics, thermals),
+Options: `--extras` (btop, tmux, vim, zsh, Obsidian, Syncthing...), `--x230` or `--intel-modern` (pick one: the
+Intel video-acceleration driver for your laptop; leave both off for AMD/Nvidia/unknown),
 `--personal-apps` (libraries for my own apps), `--theme NAME`, `--no-packages`, `--no-system` (skip everything needing
 sudo), `--dry-run`. It is safe to re-run; any file it would replace with different content is backed up first to
 `~/.config-backup/arch-setup-<date>/`.
@@ -44,8 +46,10 @@ way (systemd-networkd, iwd, `dhcpcd`), you may need to reconnect with `nmcli` or
 
 ## Adapting it to your hardware
 
-- **Monitors and graphics:** the top of `config/hypr/hyprland.lua` sets two outputs (`VGA-1`, `LVDS-1`) and
-  `LIBVA_DRIVER_NAME=i965` (X230 Intel graphics). Change these for your machine; `hyprctl monitors` lists your outputs.
+- **Monitors:** the top of `config/hypr/hyprland.lua` sets two outputs (`VGA-1`, `LVDS-1`). Change these for your
+  machine; `hyprctl monitors` lists your outputs.
+- **Graphics driver:** chosen by `--x230` / `--intel-modern` and written to `~/.config/uwsm/env` as
+  `LIBVA_DRIVER_NAME`. Edit that file to change it later.
 - **Keyboard layout, touchpad:** the `input` block in the same file.
 - **Fonts:** `JetBrainsMono Nerd Font` (installed by `core.txt`) is used by the terminal, launcher and lock screen.
 

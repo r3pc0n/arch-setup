@@ -4,14 +4,15 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DRY=0; PACKAGES=1; SYSTEM=1; EXTRAS=0; X230=0; PERSONAL=0; THEME="gruvbox"
+DRY=0; PACKAGES=1; SYSTEM=1; EXTRAS=0; X230=0; MODERN=0; PERSONAL=0; THEME="gruvbox"
 BACKUP="$HOME/.config-backup/arch-setup-$(date +%Y%m%d-%H%M%S)"
 
 usage() {
 cat <<EOF
 Usage: ./install.sh [options]
   --extras         also install packages/extras.txt (btop, tmux, vim, zsh, obsidian, syncthing, ...)
-  --x230           also install packages/x230.txt (ThinkPad X230 Intel graphics and thermals)
+  --x230           also install packages/x230.txt (ThinkPad X230: old Intel graphics driver, thermals)
+  --intel-modern   also install packages/intel-modern.txt (newer Intel graphics, Broadwell and later)
   --personal-apps  also install packages/personal-apps.txt (libraries for backtalk-ui and Murmur)
   --theme NAME     starting theme for theme-set (default: gruvbox; see 'theme-set --list')
   --no-packages    skip pacman/AUR installs
@@ -23,7 +24,7 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --extras) EXTRAS=1 ;; --x230) X230=1 ;; --personal-apps) PERSONAL=1 ;;
+    --extras) EXTRAS=1 ;; --x230) X230=1 ;; --intel-modern) MODERN=1 ;; --personal-apps) PERSONAL=1 ;;
     --theme) THEME="${2:?--theme needs a name}"; shift ;;
     --no-packages) PACKAGES=0 ;; --no-system) SYSTEM=0 ;; --dry-run) DRY=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -37,6 +38,7 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 run()  { if [ "$DRY" = 1 ]; then printf '+ %s\n' "$*"; else "$@"; fi; }
 
+[ "$X230" = 0 ] || [ "$MODERN" = 0 ] || die "--x230 and --intel-modern pick conflicting Intel graphics drivers; use only one"
 [ "$(id -u)" -ne 0 ] || die "run as your normal user, not root (the script uses sudo where needed)"
 if [ "$PACKAGES" = 1 ] || [ "$SYSTEM" = 1 ]; then
   command -v pacman >/dev/null || die "this is for Arch Linux (pacman not found)"
@@ -51,6 +53,7 @@ if [ "$PACKAGES" = 1 ]; then
   lists=("$REPO/packages/core.txt")
   [ "$EXTRAS" = 1 ] && lists+=("$REPO/packages/extras.txt")
   [ "$X230" = 1 ] && lists+=("$REPO/packages/x230.txt")
+  [ "$MODERN" = 1 ] && lists+=("$REPO/packages/intel-modern.txt")
   [ "$PERSONAL" = 1 ] && lists+=("$REPO/packages/personal-apps.txt")
   mapfile -t pkgs < <(packages_in "${lists[@]}")
   run sudo pacman -S --needed "${pkgs[@]}"
@@ -90,6 +93,25 @@ copy_tree "$REPO/bin" "$HOME/.local/bin"
 run ln -sfn modules.hyprland.jsonc "$HOME/.config/waybar/modules.jsonc"
 # folders theme-set writes into
 run mkdir -p "$HOME/.config"/{foot,fuzzel,mako,waybar/colors,hypr/assets} "$HOME/Pictures/Screenshots" "$HOME/.local/state/omarchy/current"
+
+# Per-machine graphics driver for VA-API, read by uwsm at session start (not set in hyprland.lua)
+libva=""
+[ "$X230" = 1 ] && libva="i965"
+[ "$MODERN" = 1 ] && libva="iHD"
+if [ -n "$libva" ]; then
+  say "Setting the VA-API driver to $libva in ~/.config/uwsm/env"
+  uenv="$HOME/.config/uwsm/env"
+  want="export LIBVA_DRIVER_NAME=$libva"
+  if [ "$DRY" = 1 ]; then
+    echo "+ write '$want' to $uenv"
+  else
+    mkdir -p "$(dirname "$uenv")"
+    if [ -e "$uenv" ] && [ "$(cat "$uenv")" != "$want" ]; then
+      mkdir -p "$BACKUP/uwsm"; cp -a "$uenv" "$BACKUP/uwsm/env"; echo "backed up $uenv"
+    fi
+    printf '%s\n' "$want" > "$uenv"
+  fi
+fi
 
 say "Building the tray-icon override (symbolic Wi-Fi icons)"
 icons="$HOME/.local/share/icons/neil-tray"

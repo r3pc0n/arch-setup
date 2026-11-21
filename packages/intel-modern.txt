@@ -1,0 +1,2 @@
+# Video acceleration for newer Intel graphics (Broadwell and newer). Installed with --intel-modern.
+intel-media-driver

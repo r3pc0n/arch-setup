@@ -13,7 +13,6 @@ hl.monitor({ output = "VGA-1",  mode = "1920x1080@60", position = "0x0",    scal
 hl.monitor({ output = "LVDS-1", mode = "preferred",    position = "1920x0", scale = "1" })
 hl.env("XCURSOR_SIZE", "24")
 hl.env("QT_QPA_PLATFORM", "wayland")
-hl.env("LIBVA_DRIVER_NAME", "i965")
 
 hl.config({
     general = {

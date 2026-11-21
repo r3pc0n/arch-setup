@@ -46,3 +46,5 @@ noto-fonts
 ttf-jetbrains-mono-nerd
 git
 python
+# needed by makepkg for the AUR step (yay, peaclock); not part of 'base'
+base-devel

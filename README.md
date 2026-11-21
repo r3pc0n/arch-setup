@@ -39,6 +39,9 @@ and `sddm`, sets the graphical target, installs the SDDM theme.
 
 Then reboot and pick the **Hyprland (uwsm-managed)** session at the login screen.
 
+**Networking:** the installer enables NetworkManager. If you set up the network during the Arch install some other
+way (systemd-networkd, iwd, `dhcpcd`), you may need to reconnect with `nmcli` or `nmtui` after the first reboot.
+
 ## Adapting it to your hardware
 
 - **Monitors and graphics:** the top of `config/hypr/hyprland.lua` sets two outputs (`VGA-1`, `LVDS-1`) and
